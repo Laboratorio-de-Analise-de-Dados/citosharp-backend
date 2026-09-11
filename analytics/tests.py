@@ -280,6 +280,31 @@ class GateScopeTestCase(TestCase):
         self.assertEqual(existing.copied_from_id, source.id)
         self.assertTrue(GateModel.objects.filter(id=subgate.id).exists())
 
+    def test_apply_records_author_of_the_copies(self):
+        source = self._gate(self.file_a, "P8")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        copy = GateModel.objects.get(file_data=self.file_b, name="P8")
+        self.assertEqual(copy.created_by_id, self.user.id)
+
+    def test_gate_list_exposes_author_name(self):
+        self.source.created_by = self.user
+        self.source.save(update_fields=["created_by"])
+
+        res = self.client.get(f"/analytics/gate/{self.source.id}")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["created_by_name"], self.user.username)
+
     def test_patch_experiment_scope_requires_name_or_color(self):
         res = self._patch_gate(self.source, scope="experiment", plot_config={"a": 1})
 

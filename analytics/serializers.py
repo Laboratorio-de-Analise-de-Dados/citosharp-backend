@@ -7,6 +7,14 @@ from analytics.models import AnalysisResult, DashboardModel, GateModel
 from fcs_parser.models import FileDataModel
 
 
+def gate_author_name(gate):
+    """Nome do autor do gate para exibição, ou None para gates antigos."""
+    author = gate.created_by
+    if not author:
+        return None
+    return author.get_full_name() or author.username
+
+
 class DashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = DashboardModel
@@ -32,14 +40,21 @@ class GateSerializer(serializers.ModelSerializer):
         allow_null=False
     ) 
     parent = serializers.PrimaryKeyRelatedField(queryset=GateModel.objects.all(), allow_null=True, required=False, default=None)
+    created_by_name = serializers.SerializerMethodField()
+
     class Meta: 
         model = GateModel
         fields = [
             'id', 'name', 'gate_coordinates', 'plot_config', 'created_at', 
             'dashboard',
             'file_data', 'parent', 'copied_from', 'color',
+            'created_by', 'created_by_name',
         ]
-        read_only_fields = ['id', 'created_at'] 
+        read_only_fields = ['id', 'created_at', 'created_by'] 
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_created_by_name(self, obj):
+        return gate_author_name(obj)
 
     def create(self, validated_data):
         file_data_instance = validated_data.get('file_data') 
@@ -130,10 +145,15 @@ class ListGateSerializer(serializers.ModelSerializer):
     copied_from_id = serializers.PrimaryKeyRelatedField(
         source="copied_from", read_only=True
     )
+    created_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = GateModel
-        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'plot_config', 'analysis_result', 'copied_from_id', 'color']
+        fields = ['id', 'created_at', 'parent_id', 'children', 'file_data', 'name', 'gate_coordinates', 'plot_config', 'analysis_result', 'copied_from_id', 'color', 'created_by', 'created_by_name']
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_created_by_name(self, obj):
+        return gate_author_name(obj)
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_children(self, obj):

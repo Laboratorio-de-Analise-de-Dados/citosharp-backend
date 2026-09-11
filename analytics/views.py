@@ -106,7 +106,8 @@ class CreateGateView(generics.CreateAPIView):
         data["dashboard"] = dash_instance.id
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        gate_instance = serializer.save()
+        author = request.user if request.user.is_authenticated else None
+        gate_instance = serializer.save(created_by=author)
 
         from analytics.tasks import recalculate_gate_analysis
 
@@ -694,6 +695,7 @@ class ApplyGateView(APIView):
         recursive = request.data.get("recursive", True)
         on_conflict = request.data.get("on_conflict", "replace")
         dry_run = bool(request.data.get("dry_run", False))
+        author = request.user if request.user.is_authenticated else None
 
         if not source_ids or not target_ids:
             return Response(
@@ -852,6 +854,7 @@ class ApplyGateView(APIView):
                         parent_id=new_parent_id,
                         copied_from=gate,
                         color=gate.color,
+                        created_by=author,
                     )
                     id_map[gate.id] = new_gate.id
                     file_created += 1
