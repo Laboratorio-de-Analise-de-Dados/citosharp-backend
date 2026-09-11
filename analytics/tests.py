@@ -305,6 +305,23 @@ class GateScopeTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["created_by_name"], self.user.username)
 
+    def test_build_tree_exposes_author(self):
+        self.user.first_name = "Ana"
+        self.user.last_name = "Souza"
+        self.user.save(update_fields=["first_name", "last_name"])
+        self.source.created_by = self.user
+        self.source.save(update_fields=["created_by"])
+
+        tree = GateModel.build_tree(file_data_id=self.file_a.id)
+
+        root = next(gate for gate in tree if gate["id"] == self.source.id)
+        self.assertEqual(root["created_by"], self.user.id)
+        self.assertEqual(root["created_by_name"], "Ana Souza")
+        self.assertNotIn("created_by__username", root)
+
+        child = root["children"][0]
+        self.assertIsNone(child["created_by_name"])
+
     def test_patch_experiment_scope_requires_name_or_color(self):
         res = self._patch_gate(self.source, scope="experiment", plot_config={"a": 1})
 
