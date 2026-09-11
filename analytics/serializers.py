@@ -2,6 +2,7 @@
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+from analytics.gate_author import author_display_name
 from analytics.gate_scope import SCOPE_CHOICES, SCOPE_EXPERIMENT, SCOPE_FILE
 from analytics.models import AnalysisResult, DashboardModel, GateModel
 from fcs_parser.models import FileDataModel
@@ -12,7 +13,7 @@ def gate_author_name(gate):
     author = gate.created_by
     if not author:
         return None
-    return author.get_full_name() or author.username
+    return author_display_name(author.first_name, author.last_name, author.username)
 
 
 class DashboardSerializer(serializers.ModelSerializer):
