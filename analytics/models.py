@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 from fcs_parser.models import ExperimentModel, FileDataModel
@@ -44,6 +45,13 @@ class GateModel(models.Model):
         related_name="copies",
     )
     color = models.CharField(max_length=7, null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="gates_created",
+    )
 
     def __str__(self) -> str:
         return f"Gate {self.id} – {self.name}"
