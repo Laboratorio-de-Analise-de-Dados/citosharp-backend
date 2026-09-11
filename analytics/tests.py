@@ -202,6 +202,84 @@ class GateScopeTestCase(TestCase):
         self.copy_b.refresh_from_db()
         self.assertEqual(self.copy_b.copied_from_id, self.source.id)
 
+    def test_patch_coordinates_experiment_scope_propagates_and_keeps_family(self):
+        coords = {
+            "type": "rectangle",
+            "x_axis": "FSC-A",
+            "y_axis": "SSC-A",
+            "startX": 0,
+            "endX": 1,
+            "startY": 0,
+            "endY": 1,
+        }
+
+        res = self._patch_gate(self.copy_b, gate_coordinates=coords, scope="experiment")
+
+        self.assertEqual(res.status_code, 200)
+        self.copy_b.refresh_from_db()
+        self.copy_c.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(self.copy_b.copied_from_id, self.source.id)
+        self.assertEqual(self.copy_c.gate_coordinates, coords)
+        self.assertEqual(self.source.gate_coordinates, coords)
+        self.assertCountEqual(
+            res.data["propagated_gate_ids"], [self.source.id, self.copy_c.id]
+        )
+
+    def test_apply_dry_run_reports_conflicts_without_writing(self):
+        existing = self._gate(self.file_b, "P9")
+        source = self._gate(self.file_a, "P9")
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+                "dry_run": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["created"], 0)
+        self.assertEqual([c["gate_id"] for c in res.data["conflicts"]], [existing.id])
+        existing.refresh_from_db()
+        self.assertIsNone(existing.copied_from_id)
+
+    def test_apply_replace_overwrites_in_place_and_keeps_subgates(self):
+        existing = self._gate(self.file_b, "P9")
+        subgate = self._gate(self.file_b, "P9.1", parent=existing)
+        coords = {
+            "type": "rectangle",
+            "x_axis": "FSC-A",
+            "y_axis": "SSC-A",
+            "startX": 2,
+            "endX": 3,
+            "startY": 2,
+            "endY": 3,
+        }
+        source = self._gate(self.file_a, "P9", color="#abcdef")
+        source.gate_coordinates = coords
+        source.save(update_fields=["gate_coordinates"])
+
+        res = self.client.post(
+            "/analytics/gate/apply",
+            {
+                "source_gate_ids": [source.id],
+                "target_file_data_ids": [self.file_b.id],
+                "on_conflict": "replace",
+            },
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["replaced"], 1)
+        existing.refresh_from_db()
+        self.assertEqual(existing.gate_coordinates, coords)
+        self.assertEqual(existing.color, "#abcdef")
+        self.assertEqual(existing.copied_from_id, source.id)
+        self.assertTrue(GateModel.objects.filter(id=subgate.id).exists())
+
     def test_patch_experiment_scope_requires_name_or_color(self):
         res = self._patch_gate(self.source, scope="experiment", plot_config={"a": 1})
 

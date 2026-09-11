@@ -84,8 +84,8 @@ class GateBatchDeleteSerializer(serializers.Serializer):
 class GateUpdateSerializer(serializers.Serializer):
     """Payload de PATCH /analytics/gate/<gate_id>.
 
-    `scope="experiment"` propaga nome e cor para as cópias do gate nas demais
-    amostras do experimento. Geometria e `plot_config` nunca são propagados.
+    `scope="experiment"` propaga nome, cor e geometria para as cópias do gate
+    nas demais amostras do experimento. `plot_config` nunca é propagado.
     """
 
     name = serializers.CharField(max_length=50, required=False)
@@ -96,10 +96,15 @@ class GateUpdateSerializer(serializers.Serializer):
 
     def validate(self, data):
         if data["scope"] == SCOPE_EXPERIMENT and not (
-            "name" in data or "color" in data
+            "name" in data or "color" in data or "gate_coordinates" in data
         ):
             raise serializers.ValidationError(
-                {"scope": 'scope="experiment" exige "name" e/ou "color".'}
+                {
+                    "scope": (
+                        'scope="experiment" exige "name", "color" e/ou '
+                        '"gate_coordinates".'
+                    )
+                }
             )
         return data
 

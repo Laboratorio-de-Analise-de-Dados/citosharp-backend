@@ -39,8 +39,8 @@ from utils.density import (
 logger = logging.getLogger(__name__)
 
 
-def _propagate_name_and_color(gate, new_name, new_color, color_changed):
-    """Aplica nome/cor do *gate* nas cópias dele nas outras amostras.
+def _propagate_gate_changes(gate, new_name, new_color, color_changed, new_coords=None):
+    """Aplica nome/cor/geometria do *gate* nas cópias dele nas outras amostras.
 
     Devolve (ids_propagados, conflitos). Uma cópia entra em `conflitos` quando o
     novo nome já existe no mesmo nível da amostra de destino — as constraints
@@ -80,6 +80,10 @@ def _propagate_name_and_color(gate, new_name, new_color, color_changed):
             if copy.color != normalized:
                 copy.color = normalized
                 fields.append("color")
+
+        if new_coords is not None and copy.gate_coordinates != new_coords:
+            copy.gate_coordinates = new_coords
+            fields.append("gate_coordinates")
 
         if fields:
             copy.save(update_fields=fields)
@@ -138,10 +142,12 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
         if new_coords is not None:
             gate.gate_coordinates = new_coords
             update_fields.append("gate_coordinates")
-            # Geometria customizada desfaz o vínculo com a família de cópias: a
-            # partir daqui o gate é próprio da amostra e não acompanha mais as
-            # operações em escopo de experimento (nome, cor, exclusão em lote).
-            if gate.copied_from_id:
+            # Geometria customizada só nesta amostra desfaz o vínculo com a
+            # família de cópias: a partir daqui o gate é próprio da amostra e
+            # não acompanha mais as operações em escopo de experimento. No
+            # escopo do experimento a mudança vale para a família inteira e o
+            # vínculo é mantido.
+            if gate.copied_from_id and data["scope"] != SCOPE_EXPERIMENT:
                 gate.copied_from = None
                 update_fields.append("copied_from")
         new_color = data.get("color")
@@ -180,11 +186,12 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
                     )
 
             if data["scope"] == SCOPE_EXPERIMENT:
-                propagated_ids, conflicts = _propagate_name_and_color(
+                propagated_ids, conflicts = _propagate_gate_changes(
                     gate,
                     new_name=new_name,
                     new_color=new_color,
                     color_changed="color" in data,
+                    new_coords=new_coords,
                 )
 
         # Só recalcula métricas/invalida densidade quando a geometria muda.
@@ -195,6 +202,9 @@ class UpdateGateView(generics.RetrieveUpdateDestroyAPIView):
 
             recalculate_gate_analysis(gate.id)
             invalidate_density(gate.file_data_id)
+            for copy in GateModel.objects.filter(id__in=propagated_ids):
+                recalculate_gate_analysis(copy.id)
+                invalidate_density(copy.file_data_id)
 
         serializer = self.get_serializer(gate)
         return Response(
@@ -606,6 +616,33 @@ class DeleteGateBatchView(APIView):
         )
 
 
+def _apply_conflicts(ordered_gates, target_file_data_ids):
+    """Gates de destino que seriam sobrescritos/renomeados pela aplicação.
+
+    Só considera os gates cujo pai já existe no destino (id_map vazio): os
+    sub-gates criados durante a aplicação não podem colidir com nada.
+    """
+    found = []
+    for target_fd_id in target_file_data_ids:
+        for gate in ordered_gates:
+            parent_id = _resolve_target_parent(gate, target_fd_id, {})
+            existing = GateModel.objects.filter(
+                file_data_id=target_fd_id,
+                name=gate.name,
+                parent_id=parent_id,
+            ).first()
+            if existing:
+                found.append(
+                    {
+                        "gate_id": existing.id,
+                        "file_data_id": target_fd_id,
+                        "file_name": existing.file_data.file_name,
+                        "name": existing.name,
+                    }
+                )
+    return found
+
+
 class ApplyGateView(APIView):
     """POST /analytics/gate/apply — copy gates to other files (FlowJo semantics).
 
@@ -614,8 +651,13 @@ class ApplyGateView(APIView):
       "source_gate_ids": [42],
       "target_file_data_ids": [10, 11],
       "recursive": true,           // include sub-gates (default true)
-      "on_conflict": "rename"      // "rename" | "replace" | "skip"
+      "on_conflict": "rename",     // "rename" | "replace" | "skip"
+      "dry_run": false             // só lista os conflitos, não grava nada
     }
+
+    Em `on_conflict="replace"` o gate de destino é sobrescrito no lugar
+    (geometria, cor, `plot_config` e vínculo com o original), preservando id e
+    sub-gates existentes.
     """
 
     @extend_schema(
@@ -632,6 +674,7 @@ class ApplyGateView(APIView):
                 "on_conflict": serializers.ChoiceField(
                     choices=["rename", "replace", "skip"], default="rename"
                 ),
+                "dry_run": serializers.BooleanField(default=False),
             },
         ),
         responses=inline_serializer(
@@ -639,6 +682,8 @@ class ApplyGateView(APIView):
             fields={
                 "created": serializers.IntegerField(),
                 "skipped": serializers.IntegerField(),
+                "replaced": serializers.IntegerField(),
+                "conflicts": serializers.ListField(child=serializers.DictField()),
                 "details": serializers.ListField(child=serializers.DictField()),
             },
         ),
@@ -648,6 +693,7 @@ class ApplyGateView(APIView):
         target_ids = request.data.get("target_file_data_ids", [])
         recursive = request.data.get("recursive", True)
         on_conflict = request.data.get("on_conflict", "replace")
+        dry_run = bool(request.data.get("dry_run", False))
 
         if not source_ids or not target_ids:
             return Response(
@@ -708,8 +754,22 @@ class ApplyGateView(APIView):
         from analytics.tasks import recalculate_gate_analysis
         from utils.density import invalidate_density
 
+        if dry_run:
+            return Response(
+                {
+                    "created": 0,
+                    "skipped": 0,
+                    "replaced": 0,
+                    "conflicts": _apply_conflicts(ordered_gates, target_ids),
+                    "details": [],
+                },
+                status=status.HTTP_200_OK,
+            )
+
         total_created = 0
         total_skipped = 0
+        total_replaced = 0
+        conflicts = []
         details = []
 
         with transaction.atomic():
@@ -717,6 +777,7 @@ class ApplyGateView(APIView):
                 id_map = {}  # source gate id → new gate id
                 file_created = 0
                 file_skipped = 0
+                file_replaced = 0
 
                 for gate in ordered_gates:
                     # Determine new parent in target file.
@@ -737,7 +798,29 @@ class ApplyGateView(APIView):
                             file_skipped += 1
                             continue
                         elif on_conflict == "replace":
-                            existing.delete()
+                            existing.gate_coordinates = gate.gate_coordinates
+                            existing.plot_config = gate.plot_config
+                            existing.color = gate.color
+                            existing.copied_from = gate
+                            existing.save(
+                                update_fields=[
+                                    "gate_coordinates",
+                                    "plot_config",
+                                    "color",
+                                    "copied_from",
+                                ]
+                            )
+                            id_map[gate.id] = existing.id
+                            file_replaced += 1
+                            conflicts.append(
+                                {
+                                    "gate_id": existing.id,
+                                    "file_data_id": target_fd_id,
+                                    "name": existing.name,
+                                    "resolution": "replaced",
+                                }
+                            )
+                            continue
                         else:  # rename
                             suffix = 2
                             gate_name = f"{gate.name} ({suffix})"
@@ -778,10 +861,12 @@ class ApplyGateView(APIView):
                         "file_data_id": target_fd_id,
                         "gates_created": file_created,
                         "gates_skipped": file_skipped,
+                        "gates_replaced": file_replaced,
                     }
                 )
                 total_created += file_created
                 total_skipped += file_skipped
+                total_replaced += file_replaced
 
         # Trigger async recalculation + cache invalidation outside the transaction.
         for target_fd_id in target_ids:
@@ -797,6 +882,12 @@ class ApplyGateView(APIView):
                 recalculate_gate_analysis(rg.id)
 
         return Response(
-            {"created": total_created, "skipped": total_skipped, "details": details},
+            {
+                "created": total_created,
+                "skipped": total_skipped,
+                "replaced": total_replaced,
+                "conflicts": conflicts,
+                "details": details,
+            },
             status=status.HTTP_201_CREATED,
         )
