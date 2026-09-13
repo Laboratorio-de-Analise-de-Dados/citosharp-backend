@@ -128,6 +128,24 @@ class UserRetrieveUpdateDestroyView(
         return super().get_object()
 
 
+def _assert_not_last_org_admin(membership):
+    """Impede que a organização fique sem nenhum admin ativo."""
+    if (
+        membership.role.name == Role.ORG_ADMIN
+        and membership.status == "active"
+        and not Membership.objects.filter(
+            organization_id=membership.organization_id,
+            role__name=Role.ORG_ADMIN,
+            status="active",
+        )
+        .exclude(id=membership.id)
+        .exists()
+    ):
+        raise serializers.ValidationError(
+            {"role": "A organização precisa de pelo menos um admin ativo."}
+        )
+
+
 class MembershipListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated, IsOrgAdmin]
 
@@ -149,8 +167,27 @@ class MembershipListCreateView(generics.ListCreateAPIView):
 
 class MembershipRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsOrgAdmin]
-    queryset = Membership.objects.all().select_related("user", "role", "organization")
     serializer_class = MembershipSerializer
+
+    def get_queryset(self):
+        return Membership.objects.filter(
+            organization_id=self.kwargs["organization_id"]
+        ).select_related("user", "role", "organization")
+
+    def perform_update(self, serializer):
+        membership = serializer.instance
+        new_role = serializer.validated_data.get("role", membership.role)
+        new_status = serializer.validated_data.get("status", membership.status)
+        leaves_admin = (
+            new_role.name != Role.ORG_ADMIN or new_status != "active"
+        )
+        if leaves_admin:
+            _assert_not_last_org_admin(membership)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        _assert_not_last_org_admin(instance)
+        instance.delete()
 
     def get_serializer_class(self):
         if self.request.method in ["PUT", "PATCH"]:
