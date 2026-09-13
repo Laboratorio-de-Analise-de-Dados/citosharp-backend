@@ -5,6 +5,7 @@ import urllib.parse
 from datetime import timedelta
 import requests
 from django.conf import settings
+from django.db.models import Prefetch
 from django.utils import timezone
 from django.contrib.auth.tokens import default_token_generator
 from django.shortcuts import get_object_or_404, redirect
@@ -13,7 +14,6 @@ from rest_framework import generics, serializers
 from accounts.permissions.has_permission import IsOrgAdmin, IsSuperAdmin
 from accounts.serializers import (
     OrganizationDetailSerializer,
-    OrganizationListSerializer,
     UserCreateSerializer,
     UserDetailSerializer,
     UserListSerializer,
@@ -48,18 +48,24 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 class OrganizationListCreateView(SerializerByMethodMixin, generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = OrganizationListSerializer
+    serializer_class = OrganizationDetailSerializer
     serializer_map = {
         "POST": OrganizationDetailSerializer,
     }
 
     def get_queryset(self):
         user = self.request.user
+        members = Prefetch(
+            "memberships",
+            queryset=Membership.objects.filter(status="active").select_related(
+                "user", "role", "organization"
+            ),
+        )
         if user.is_super_admin:
-            return Organization.objects.all()
+            return Organization.objects.prefetch_related(members)
         return Organization.objects.filter(
             memberships__user=user, memberships__status="active"
-        ).distinct()
+        ).prefetch_related(members).distinct()
 
     def perform_create(self, serializer):
         org = serializer.save()
@@ -76,7 +82,14 @@ class OrganizationRetrieveUpdateDestroyView(
     SerializerByMethodMixin, generics.RetrieveUpdateDestroyAPIView
 ):
     permission_classes = [IsAuthenticated]
-    queryset = Organization.objects.all()
+    queryset = Organization.objects.prefetch_related(
+        Prefetch(
+            "memberships",
+            queryset=Membership.objects.filter(status="active").select_related(
+                "user", "role", "organization"
+            ),
+        )
+    )
     serializer_class = OrganizationDetailSerializer
     serializer_map = {
         "GET": OrganizationDetailSerializer,

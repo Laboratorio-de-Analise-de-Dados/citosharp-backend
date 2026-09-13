@@ -60,9 +60,7 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "org_type", "external_id", "members"]
 
     def get_members(self, obj):
-        memberships = obj.memberships.filter(status="active").select_related(
-            "user", "role"
-        )
+        memberships = [m for m in obj.memberships.all() if m.status == "active"]
         return MembershipSerializer(memberships, many=True).data
 
 
