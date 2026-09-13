@@ -231,9 +231,24 @@ class UserDetailSerializer(serializers.ModelSerializer):
 
 
 class MembershipCreateSerializer(serializers.ModelSerializer):
+    role = serializers.CharField()
+
     class Meta:
         model = Membership
         fields = ["user", "role", "status"]
+
+    def validate_role(self, value):
+        """Aceita o nome da role (`member`, `org_admin`) ou o id."""
+        roles = get_or_create_default_roles()
+        if value in roles:
+            return roles[value]
+
+        if str(value).isdigit():
+            role = Role.objects.filter(id=int(value)).first()
+            if role:
+                return role
+
+        raise serializers.ValidationError("Role inválida.")
 
 
 class InviteSerializer(serializers.ModelSerializer):

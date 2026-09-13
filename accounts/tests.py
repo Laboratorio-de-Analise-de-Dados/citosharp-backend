@@ -80,6 +80,96 @@ class InviteAcceptTests(APITestCase):
         emails = [member["user"]["email"] for member in organization["members"]]
         self.assertNotIn("guest@example.com", emails)
 
+    def membership_detail_url(self, membership):
+        return reverse(
+            "membership_detail",
+            kwargs={
+                "organization_id": membership.organization_id,
+                "pk": membership.id,
+            },
+        )
+
+    def test_org_admin_changes_member_role_by_name(self):
+        self.accept()
+        membership = Membership.objects.get(user=self.guest)
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            self.membership_detail_url(membership), {"role": Role.ORG_ADMIN}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        membership.refresh_from_db()
+        self.assertEqual(membership.role.name, Role.ORG_ADMIN)
+
+    def test_org_admin_removes_member(self):
+        self.accept()
+        membership = Membership.objects.get(user=self.guest)
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.delete(self.membership_detail_url(membership))
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Membership.objects.filter(id=membership.id).exists())
+
+    def test_member_cannot_manage_memberships(self):
+        self.accept()
+        membership = Membership.objects.get(user=self.guest)
+
+        self.client.force_authenticate(user=self.guest)
+        response = self.client.delete(self.membership_detail_url(membership))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Membership.objects.filter(id=membership.id).exists())
+
+    def test_cannot_remove_last_org_admin(self):
+        owner_membership = Membership.objects.get(user=self.owner)
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.delete(self.membership_detail_url(owner_membership))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Membership.objects.filter(id=owner_membership.id).exists())
+
+    def test_cannot_demote_last_org_admin(self):
+        owner_membership = Membership.objects.get(user=self.owner)
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            self.membership_detail_url(owner_membership), {"role": Role.MEMBER}
+        )
+
+        self.assertEqual(response.status_code, 400)
+        owner_membership.refresh_from_db()
+        self.assertEqual(owner_membership.role.name, Role.ORG_ADMIN)
+
+    def test_admin_cannot_manage_membership_of_another_organization(self):
+        self.accept()
+        other_org = Organization.objects.create(name="Lab B", org_type="lab")
+        outsider = User.objects.create_user(
+            username="outsider", email="outsider@example.com", password="pass12345"
+        )
+        foreign = Membership.objects.create(
+            user=outsider,
+            organization=other_org,
+            role=self.roles[Role.MEMBER],
+            status="active",
+        )
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.delete(
+            reverse(
+                "membership_detail",
+                kwargs={
+                    "organization_id": self.organization.id,
+                    "pk": foreign.id,
+                },
+            )
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Membership.objects.filter(id=foreign.id).exists())
+
     def test_accept_rejects_invite_of_another_email(self):
         other = User.objects.create_user(
             username="other", email="other@example.com", password="pass12345"
